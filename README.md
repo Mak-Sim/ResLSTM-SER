@@ -25,6 +25,9 @@ ResLSTM-SER/
 ├── LICENSE                     # MIT License
 ├── .gitignore                  # Git ignore rules
 │
+├── assets/
+│   └── figures/                # Figures from the paper (used in this README)
+│
 ├── src/                        # Reusable source modules
 │   ├── models/
 │   │   ├── res_lstm.py          # ResLSTM_Multi_Att model
@@ -48,7 +51,7 @@ ResLSTM-SER/
 │   └── results_LSTM_H128_UAR_stat.txt
 │
 └── slides/                     # Conference presentation slides
-    └── DSPA2026_kd_vm.pdf
+    └── DSPA2026_kd_vm.pdf       # See: slides/DSPA2026_kd_vm.pdf
 ```
 
 ---
@@ -57,50 +60,42 @@ ResLSTM-SER/
 
 ### ResLSTM-SA (Residual LSTM with Soft Attention)
 
-```text
-         Input x in R^(T x 46)
-               |
-               v
-  +-----------------------------+
-  |  LSTM1  (46 -> 46)           |
-  |  Xavier init, forget bias=1 |
-  +-------------+---------------+
-                |
-                +---- (+) <--- x (skip connection)
-                |
-                v
-  +-----------------------------+
-  |  BatchNorm1d(46)            |
-  +-------------+---------------+
-                |
-                v
-  +-----------------------------+
-  |  LSTM2  (46 -> H)            |
-  |  H in {32, 64, 128}          |
-  +-------------+---------------+
-                |
-                v
-  +-----------------------------+
-  |  Soft Attention             |
-  |  a_t = softmax(u^T . h_t)   |
-  |  c = sum a_t . h_t          |
-  +-------------+---------------+
-                |
-                v
-  +-----------------------------+
-  |  BatchNorm1d(H) -> Dropout  |
-  |  Linear(H -> 8) -> Softmax  |
-  +-------------+---------------+
-                |
-                v
-      8-class emotion output
-```
+<p align="center">
+  <img src="assets/figures/ResLSTM_scheme.png" alt="ResLSTM-SA architecture" width="55%">
+</p>
+<p align="center"><em>Scheme of the proposed ResLSTM-SA model.</em></p>
+
+The proposed architecture augments the LSTM-SA baseline with an additional LSTM layer (`LSTM1`) wrapped in a residual (skip) connection. `LSTM1` enriches the temporal representation of the input features before they are processed by the main attention-based `LSTM2`:
+
+- **`LSTM1` (46 → 46)** — Xavier init, forget-gate bias = 1; output added to the input via a skip connection (`Σ`).
+- **BatchNorm1d(46)** — normalizes the fused representation.
+- **`LSTM2` (46 → H)** — `H ∈ {32, 64, 128}`.
+- **Soft Attention** — `α_t = softmax(uᵀ·h_t)`, context `h_context = Σ α_t·h_t`.
+- **BatchNorm1d(H) → Dropout → Linear(H → 8) → Softmax** — 8-class emotion output.
 
 **Key design choice:** `LSTM1` preserves the input dimensionality (`d=46`), enabling additive residual fusion of raw features with contextually enriched representations before passing them to the attention-based `LSTM2`.
+
+The figure below visualizes the input feature sequence and intermediate activations of the trained **ResLSTM-SA-h64**. `LSTM1` produces contextually enriched representations that are added to the original input via the residual connection, while the attention mechanism concentrates on salient temporal regions (around frames 40 and 60) corresponding to emotionally expressive segments.
+
+<p align="center">
+  <img src="assets/figures/ResLSTM_hidden_state.png" alt="Signal flow in ResLSTM-SA-h64" width="70%">
+</p>
+<p align="center"><em>Visualization of signal flow in ResLSTM-SA-h64.</em></p>
 
 ### Baseline: LSTM-SA
 
 The single-LSTM baseline with soft attention from [Mirsamadi & Barsoum (2017)](https://arxiv.org/abs/1708.03947).
+
+---
+
+## Feature Extraction
+
+The speech signal is parameterized with a 34-dimensional MFCC vector and a 12-dimensional chromagram per frame, concatenated into a 46-dimensional joint representation `X ∈ R^(T×46)` that serves as input to the recurrent network.
+
+<p align="center">
+  <img src="assets/figures/feature_extraction.png" alt="Feature extraction pipeline" width="92%">
+</p>
+<p align="center"><em>Feature extraction process (MFCC + chroma → 46-dim sequence).</em></p>
 
 ---
 
@@ -114,6 +109,39 @@ The single-LSTM baseline with soft attention from [Mirsamadi & Barsoum (2017)](h
 
 *Results reported over 10 independent runs with Optuna-optimized hyperparameters. UAR = Unweighted Average Recall.*
 
+Incorporating residual connections consistently improves UAR over the LSTM-SA baseline across all capacities (gains of up to 7.7 percentage points). `ResLSTM-SA-h32` (28.0k params) even outperforms the much larger `LSTM-SA-h128` (91.6k params).
+
+### Confusion Matrix (ResLSTM-SA-h64)
+
+<p align="center">
+  <img src="assets/figures/confusion_matrix_ResLSTM_h64.png" alt="Confusion matrix for ResLSTM-SA-h64" width="60%">
+</p>
+
+*`happy` shows the lowest class-wise recall (44.8%), mostly confused with `neutral`; conversely 18.8% of `neutral` utterances are misclassified as `happy` — a systematic confusability between these affective states.*
+
+### Embedding Space (PCA)
+
+<p align="center">
+  <img src="assets/figures/pca_ResLSTM_h64.png" alt="PCA of ResLSTM-SA-h64 embeddings vs raw features" width="95%">
+</p>
+
+*PCA projections of (a) `ResLSTM-SA-h64` utterance-level embeddings and (b) averaged MFCC+Chroma features. The learned embeddings form compact, well-separated clusters, whereas raw features overlap heavily — demonstrating the model's ability to encode emotion-discriminative structure.*
+
+### Comparison with State-of-the-Art (RAVDESS)
+
+| Model | #Params | UAR |
+|-------|---------|-----|
+| AlexNet embeddings + SVM | 61.0 M | 0.4580 |
+| CNN+LSTM | — | 0.5671 |
+| GResNet+S | — | 0.5970 |
+| Fine-tuned AlexNet | 61.0 M | 0.6167 |
+| **ResLSTM-SA-h64 (proposed)** | **0.05 M** | **0.6517** |
+| Fine-tuned CNN14 | 81.0 M | 0.7658 |
+| Fine-tuned xlsr-wav2vec 2.0 | 317.0 M | 0.8182 |
+| wav2vec 2.0 + data augmentation | 317.0 M | 0.8229 |
+
+*ResLSTM-SA-h64 surpasses all non–self-supervised approaches while using **three orders of magnitude fewer parameters** than fine-tuned CNN/transformer models. See the paper for references.*
+
 ---
 
 ## Quick Start
@@ -121,7 +149,7 @@ The single-LSTM baseline with soft attention from [Mirsamadi & Barsoum (2017)](h
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/your-username/ResLSTM-SER.git
+git clone https://github.com/Mak-Sim/ResLSTM-SER.git
 cd ResLSTM-SER
 ```
 
